@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="theme-color" content="#0ea5a4"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Assignment Tracker</title>
+
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icons/icon-192.png">
+
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: { brand: '#0ea5a4' },
+          fontFamily: { inter: ['Inter', 'sans-serif'] }
+        }
+      }
+    }
+  </script>
+
+  <style>
+    body { font-family: Inter, sans-serif; background: linear-gradient(180deg,#f8fafc,white); }
+    .card-hover:hover .delete-subject { opacity: 1; transform: translateY(0); }
+    .delete-subject { opacity: 0; transform: translateY(-6px); transition: all .18s ease; }
+  </style>
+</head>
+<body class="min-h-screen flex items-center justify-center p-4">
+
+<div id="app" class="w-full max-w-4xl">
+  <div class="bg-white rounded-2xl shadow-lg p-6">
+    <header class="flex items-center justify-between mb-6">
+      <h1 id="title" class="text-2xl font-semibold">Assignment Tracker</h1>
+      <div class="text-sm text-gray-500">Single User · Firebase Firestore</div>
+    </header>
+
+    <main id="subjects-view">
+      <form id="add-subject-form" class="mb-4">
+        <div class="flex gap-2">
+          <input id="subject-name" class="flex-1 px-4 py-2 rounded-lg border shadow-sm" placeholder="Add subject" required />
+          <button class="px-4 py-2 rounded-lg bg-brand text-white font-medium" type="submit">Add</button>
+        </div>
+      </form>
+      <section id="subjects-grid" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4"></section>
+    </main>
+
+    <section id="assignments-view" class="hidden">
+      <div class="flex items-center gap-4 mb-4">
+        <button id="back-button" class="px-3 py-2 rounded-lg border">Back</button>
+        <h2 id="subject-title" class="text-xl font-semibold"></h2>
+        <div class="ml-auto text-sm text-gray-500" id="subject-count"></div>
+      </div>
+      <form id="add-assignment-form" class="mb-4 grid grid-cols-1 md:grid-cols-3 gap-2 items-end">
+        <div class="col-span-2 flex gap-2 items-center">
+          <span class="px-3 py-2 bg-gray-100 rounded-l-lg border">Assignment</span>
+          <input id="assignment-no" class="flex-1 px-4 py-2 border rounded-r-lg" placeholder="2.1" required />
+        </div>
+        <div class="flex gap-2">
+          <input id="due-date" type="date" class="px-4 py-2 border rounded-lg" required />
+          <button class="px-4 py-2 rounded-lg bg-brand text-white font-medium" type="submit">Add</button>
+        </div>
+      </form>
+      <ul id="assignments-list" class="space-y-3"></ul>
+    </section>
+  </div>
+</div>
+
+<script type="module">
+  const firebaseConfig = {
+    apiKey: "REPLACE_ME",
+    authDomain: "REPLACE_ME",
+    projectId: "REPLACE_ME",
+    storageBucket: "REPLACE_ME",
+    messagingSenderId: "REPLACE_ME",
+    appId: "REPLACE_ME"
+  };
+
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.2/firebase-app.js";
+  import { 
+    getFirestore, collection, doc, addDoc, deleteDoc, updateDoc, onSnapshot, query, orderBy, getDocs, enableIndexedDbPersistence, serverTimestamp 
+  } from "https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore.js";
+
+  const app = initializeApp(firebaseConfig);
+  const db = getFirestore();
+  enableIndexedDbPersistence(db).catch(err => console.warn("Persistence error:", err));
+
+  const subjectsView = document.getElementById('subjects-view');
+  const assignmentsView = document.getElementById('assignments-view');
+  const subjectsGrid = document.getElementById('subjects-grid');
+  const addSubjectForm = document.getElementById('add-subject-form');
+  const subjectNameInput = document.getElementById('subject-name');
+  const backButton = document.getElementById('back-button');
+  const subjectTitle = document.getElementById('subject-title');
+  const subjectCount = document.getElementById('subject-count');
+  const addAssignmentForm = document.getElementById('add-assignment-form');
+  const assignmentNoInput = document.getElementById('assignment-no');
+  const dueDateInput = document.getElementById('due-date');
+  const assignmentsList = document.getElementById('assignments-list');
+
+  let currentSubject = null;
+  let assignmentsUnsubscribe = null;
+
+  function subjectsCollectionRef() {
+    return collection(db, 'subjects');
+  }
+  function assignmentsCollectionRef(subjectId) {
+    return collection(db, `subjects/${subjectId}/assignments`);
+  }
+
+  function formatDate(iso) {
+    return iso ? new Date(iso).toLocaleDateString() : '';
+  }
+
+  function showSubjectsView() {
+    assignmentsView.classList.add('hidden');
+    subjectsView.classList.remove('hidden');
+    currentSubject = null;
+    if (assignmentsUnsubscribe) { assignmentsUnsubscribe(); assignmentsUnsubscribe=null; }
+  }
+  function showAssignmentsView(subject) {
+    subjectsView.classList.add('hidden');
+    assignmentsView.classList.remove('hidden');
+    subjectTitle.textContent = subject.name;
+    currentSubject = subject;
+    loadAssignmentsForSubject(subject);
+  }
+
+  function listenSubjects() {
+    const q = query(subjectsCollectionRef(), orderBy('name'));
+    onSnapshot(q, snap => {
+      subjectsGrid.innerHTML='';
+      if (snap.empty) createSampleData();
+      snap.forEach(docSnap => renderSubjectCard({id:docSnap.id, ...docSnap.data()}));
+    });
+  }
+
+  async function createSampleData() {
+    const col = subjectsCollectionRef();
+    const existing = await getDocs(col);
+    if (!existing.empty) return;
+    const sref = await addDoc(col, {name:'BCT', createdAt:serverTimestamp()});
+    await addDoc(assignmentsCollectionRef(sref.id), {number:'1.1', dueDate:new Date().toISOString(), done:false, checked:false, uploaded:false, createdAt:serverTimestamp()});
+  }
+
+  function renderSubjectCard(subject) {
+    const card = document.createElement('div');
+    card.className='card-hover relative rounded-xl p-4 bg-white border shadow-sm';
+    const nameEl=document.createElement('div'); nameEl.className='text-lg font-medium'; nameEl.textContent=subject.name;
+    const pendingEl=document.createElement('div'); pendingEl.className='text-sm text-gray-500';
+    const delBtn=document.createElement('button'); delBtn.className='delete-subject absolute top-3 right-3 text-red-500'; delBtn.innerHTML='&times;';
+    delBtn.onclick=async e=>{e.stopPropagation(); if(confirm('Delete subject?')) await deleteSubjectAndAssignments(subject.id);};
+    card.append(delBtn,nameEl,pendingEl);
+    card.onclick=()=>showAssignmentsView(subject);
+    subjectsGrid.appendChild(card);
+    onSnapshot(assignmentsCollectionRef(subject.id), snap=>{let p=0;snap.forEach(d=>{if(!d.data().done)p++;});pendingEl.textContent=`${p} pending`;});
+  }
+
+  async function deleteSubjectAndAssignments(subjectId) {
+    const snapshot=await getDocs(assignmentsCollectionRef(subjectId));
+    for(const docSnap of snapshot.docs){ await deleteDoc(doc(db,`subjects/${subjectId}/assignments/${docSnap.id}`)); }
+    await deleteDoc(doc(db,`subjects/${subjectId}`));
+  }
+
+  addSubjectForm.onsubmit=async e=>{
+    e.preventDefault();
+    const name=subjectNameInput.value.trim();
+    if(!name) return;
+    await addDoc(subjectsCollectionRef(),{name,createdAt:serverTimestamp()});
+    subjectNameInput.value='';
+  };
+
+  function loadAssignmentsForSubject(subject){
+    assignmentsList.innerHTML='';
+    if(assignmentsUnsubscribe) assignmentsUnsubscribe();
+    const q=query(assignmentsCollectionRef(subject.id),orderBy('dueDate'));
+    assignmentsUnsubscribe=onSnapshot(q,snap=>{
+      assignmentsList.innerHTML=''; let t=0;
+      snap.forEach(d=>{t++;renderAssignment(subject,{id:d.id,...d.data()});});
+      subjectCount.textContent=`${t} assignments`;
+    });
+  }
+
+  addAssignmentForm.onsubmit=async e=>{
+    e.preventDefault();
+    const number=assignmentNoInput.value.trim();
+    const dueDate=dueDateInput.value;
+    if(!number||!dueDate) return;
+    await addDoc(assignmentsCollectionRef(currentSubject.id),{number,dueDate:new Date(dueDate).toISOString(),done:false,checked:false,uploaded:false,createdAt:serverTimestamp()});
+    assignmentNoInput.value=''; dueDateInput.value='';
+  };
+
+  function renderAssignment(subject,assignment){
+    const li=document.createElement('li'); li.className='rounded-xl p-3 border shadow-sm flex items-start gap-3';
+    const nameWrap=document.createElement('div'); nameWrap.className='flex-1';
+    const nameEl=document.createElement('div'); nameEl.className='font-medium'; nameEl.textContent=`Assignment ${assignment.number}`;
+    const dueEl=document.createElement('div'); dueEl.className='text-sm text-gray-500'; dueEl.textContent=`Due: ${formatDate(assignment.dueDate)}`;
+    nameWrap.append(nameEl,dueEl);
+
+    const controls=document.createElement('div'); controls.className='flex flex-col gap-2 items-end';
+    function mk(label,field){const l=document.createElement('label'); l.className='flex items-center gap-2 text-sm'; const cb=document.createElement('input'); cb.type='checkbox'; cb.checked=!!assignment[field]; cb.onchange=()=>updateDoc(doc(db,`subjects/${subject.id}/assignments/${assignment.id}`),{[field]:cb.checked}); l.append(cb,document.createTextNode(label)); return l;}
+    controls.append(mk('Done','done'),mk('Checked','checked'),mk('Uploaded','uploaded'));
+    const del=document.createElement('button'); del.className='text-red-500 text-sm'; del.textContent='Delete'; del.onclick=()=>deleteDoc(doc(db,`subjects/${subject.id}/assignments/${assignment.id}`)); controls.appendChild(del);
+
+    if(!assignment.done && assignment.dueDate && new Date(assignment.dueDate)<new Date()){ li.style.backgroundColor='rgba(254,226,226,0.6)'; }
+    if(assignment.done){ li.style.backgroundColor='rgba(220,252,231,0.7)'; nameEl.style.textDecoration='line-through'; }
+
+    li.append(nameWrap,controls);
+    assignmentsList.appendChild(li);
+  }
+
+  backButton.onclick=()=>showSubjectsView();
+
+  listenSubjects();
+
+  if('serviceWorker' in navigator){ navigator.serviceWorker.register('sw.js'); }
+</script>
+</body>
+</html>
