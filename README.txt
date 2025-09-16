@@ -1,5 +1,5 @@
 
-Assignment Tracker (Single User, no Auth)
+Assignment Tracker (no Auth)
 
 - index.html: full app (UI + Firebase Firestore logic, no authentication).
 - manifest.json: PWA manifest.
